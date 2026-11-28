@@ -357,28 +357,27 @@ def _is_protected_or_m2_agent(agent: Mapping[str, Any], workspaces_by_id: Mappin
     return False, ""
 
 
-_ROLE_SUFFIX = r"(?:goal-tl-r[a-z0-9]+|team-lead-r[a-z0-9]+|(?:writer|reviewer|rev|explorer|exp|pr-monitor|prmon|designer|des)[a-z0-9_]*(?:-[a-z0-9_]+)*)"
+_ROLE_SUFFIX = r"(?:goal-tl-r[a-z0-9]+|team-lead-r[a-z0-9]+|(?:writer|reviewer|rev|explorer|exp|pr-monitor|prmon|designer|des)[a-z0-9_]*(?:-r[a-z0-9]+)?)"
+_TASK_ID_RE = r"(?:tk|t)\d+[a-z0-9]*"
 
 
-def _valid_goal_suffix(suffix: str) -> bool:
-    return bool(re.fullmatch(rf"(?:(?:tk|t)\d+[a-z0-9]*-)?{_ROLE_SUFFIX}", suffix))
+def _valid_goal_suffix(suffix: str, *, allow_task_only: bool = False) -> bool:
+    pattern = rf"(?:{_TASK_ID_RE}|(?:{_TASK_ID_RE}-)?{_ROLE_SUFFIX})" if allow_task_only else rf"(?:{_TASK_ID_RE}-)?{_ROLE_SUFFIX}"
+    return bool(re.fullmatch(pattern, suffix))
 
 
-def _match_goal_name(name: str, ledgers: Mapping[str, Mapping[str, Any]]) -> str | None:
+def _match_goal_name(name: str, ledgers: Mapping[str, Mapping[str, Any]], *, allow_task_only: bool = False) -> str | None:
     ordered = sorted(ledgers.items(), key=lambda kv: len(kv[0]), reverse=True)
     if name in ledgers:
         return name
-    prefixes = [(g, g) for g, _ in ordered if name.startswith(g + "-")]
-    if not prefixes:
-        prefixes = [(g, str(m.get("tl_stem"))) for g, m in ordered
-                    if m.get("tl_stem") and name.startswith(str(m["tl_stem"]) + "-")]
+    prefixes = [(g, p) for g, m in ordered for p in (g, str(m.get("tl_stem") or "")) if p and name.startswith(p + "-")]
     if prefixes:
         longest = max(len(prefix) for _, prefix in prefixes)
-        matches = {g for g, prefix in prefixes if len(prefix) == longest and _valid_goal_suffix(name[len(prefix) + 1:])}
+        matches = {g for g, p in prefixes if len(p) == longest and _valid_goal_suffix(name[len(p) + 1:], allow_task_only=allow_task_only)}
         return next(iter(matches)) if len(matches) == 1 else "__ambiguous__"
     stem = _tl_stem(name) or name
     matches = [g for g, _ in ordered if _stem_matches_goal(stem, g)]
-    if matches and stem != name and not _valid_goal_suffix(name[len(stem) + 1:]):
+    if matches and stem != name and not _valid_goal_suffix(name[len(stem) + 1:], allow_task_only=allow_task_only):
         return "__ambiguous__"
     return matches[0] if len(matches) == 1 else ("__ambiguous__" if matches else None)
 
@@ -389,10 +388,8 @@ def _match_agent_to_goal(agent: Mapping[str, Any], ledgers: Mapping[str, Mapping
     refs = {g for g, m in ledgers.items() if name and (name == m.get("tl_name") or name in (m.get("agent_refs") or ()))}
     matches.update(refs)
     for value in (agent.get("cwd") or agent.get("foreground_cwd"), agent.get("terminal_title_stripped") or agent.get("terminal_title")):
-        text = str(value or "")
-        matches.update(g for g in ledgers if re.search(rf"/{re.escape(g)}(?=/|$|[\s'\"])", text))
-        for slug in re.findall(r"/(?:worktrees|handoff)/([A-Za-z0-9_.-]+)", text):
-            match = _match_goal_name(slug, ledgers)
+        for kind, slug in re.findall(r"/(worktrees|handoff)/([A-Za-z0-9_.-]+)", str(value or "")):
+            match = _match_goal_name(slug, ledgers, allow_task_only=(kind == "worktrees"))
             if match:
                 matches.add(match)
     return next(iter(matches)) if len(matches) == 1 else ("__ambiguous__" if matches else None)
@@ -588,11 +585,13 @@ def _is_worktree_held(worktree: Path, held_goals: set[str]) -> bool:
     if (worktree / ".hold").exists() or (worktree / ".keep").exists():
         return True
     wt_name = worktree.name
-    return wt_name in held_goals or any(wt_name.startswith(g + "-") and _valid_goal_suffix(wt_name[len(g) + 1:]) for g in held_goals)
+    return wt_name in held_goals or any(
+        wt_name.startswith(g + "-") and _valid_goal_suffix(wt_name[len(g) + 1:], allow_task_only=True) for g in held_goals
+    )
 
 
 def _match_worktree_to_goal(worktree: Path, ledgers: Mapping[str, Mapping[str, Any]]) -> str | None:
-    return _match_goal_name(worktree.name, ledgers)
+    return _match_goal_name(worktree.name, ledgers, allow_task_only=True)
 
 
 def _is_positively_merged(

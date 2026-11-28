@@ -354,11 +354,41 @@ class TeamLeadAgentRetroLockTests(unittest.TestCase):
                 self.assertEqual(module._match_worktree_to_goal(self.scratch / name, ledgers), "app-ios")
                 self.assertFalse(module._is_worktree_held(self.scratch / name, {"app"}))
                 self.assertTrue(module._is_worktree_held(self.scratch / name, {"app-ios"}))
+        for valid_suffix in ("writer", "t1-writer-r1", "tk1a-rev-r2", "pr-monitor-r1", "goal-tl-r1", "team-lead-r2"):
+            self.assertTrue(module._valid_goal_suffix(valid_suffix), valid_suffix)
+        for bad_suffix in ("reviewer-writer-r1", "writer-goal-tl-r1", "designer-writer-r1", "des-goal-tl-r1", "exp-writer-r1", "ios-writer-r1"):
+            self.assertFalse(module._valid_goal_suffix(bad_suffix), bad_suffix)
+            self.assertEqual(module._match_agent_to_goal({"name": f"app-{bad_suffix}"}, {"app": {"goal_done": True}}), "__ambiguous__")
+        tl_stem_ledgers = {
+            "app": {"goal_done": True},
+            "app-designer": {"goal_done": False, "tl_stem": "app-des"},
+        }
+        self.assertEqual(module._match_agent_to_goal({"name": "app-des-writer-r1"}, tl_stem_ledgers), "app-designer")
+        self.assertEqual(module._match_agent_to_goal({"name": "app-des-goal-tl-r1"}, tl_stem_ledgers), "app-designer")
         self.assertEqual(module._match_worktree_to_goal(self.scratch / "app-ios", ledgers), "app-ios")
+        self.assertEqual(module._match_worktree_to_goal(self.scratch / "app-ios-t1", ledgers), "app-ios")
+        self.assertTrue(module._is_worktree_held(self.scratch / "app-ios-t1", {"app-ios"}))
         self.assertFalse(module._is_worktree_held(self.scratch / "app-ios", {"app"}))
         for field in ("cwd", "terminal_title_stripped"):
-            for path in (self.scratch / "worktrees/app-ios", self.scratch / "handoff/app-ios/Sources"):
+            for path in (self.scratch / "worktrees/app-ios", self.scratch / "worktrees/app-ios-t1", self.scratch / "handoff/app-ios/Sources"):
                 self.assertEqual(module._match_agent_to_goal({"name": "unrelated-writer-r1", field: str(path)}, ledgers), "app-ios")
+        ancestor_ledgers = {
+            "user-skills": {"goal_done": True},
+            "app": {"goal_done": True},
+            "goal-clean-merged": {"goal_done": True, "tl_name": "clean-mrg-goal-tl-r1", "tl_stem": "clean-mrg"},
+            "app-ios": {"goal_done": False},
+        }
+        self.assertEqual(
+            module._match_agent_to_goal({"name": "clean-mrg-goal-tl-r1", "cwd": "/tmp/dev/user-skills"}, ancestor_ledgers),
+            "goal-clean-merged",
+        )
+        self.assertIsNone(
+            module._match_agent_to_goal({"name": "active-writer-r1", "cwd": "/tmp/dev/user-skills"}, ancestor_ledgers),
+        )
+        self.assertEqual(
+            module._match_agent_to_goal({"name": "app-ios-writer-r1", "cwd": "/tmp/app/worktrees/app-ios"}, ancestor_ledgers),
+            "app-ios",
+        )
         aliases = {"good-designer": {"tl_stem": "good-des"}, "good-designs": {"tl_stem": "good-des"}}
         self.assertEqual(module._match_agent_to_goal({"name": "good-des-writer-r1"}, aliases), "__ambiguous__")
         self.assertEqual(module._match_agent_to_goal({"name": "good-des-goal-tl-r1"}, aliases), "__ambiguous__")
@@ -375,9 +405,9 @@ class TeamLeadAgentRetroLockTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in report["reclaimable_panes"]], ["app-writer-r1", "orphan-writer-r1"])
         self.assertEqual([item["name"] for item in report["active_m1_panes"]], ["app-ios-writer-r1"])
         shutil.rmtree(handoff / "app-ios")
-        report = scan(["app-ios-writer-r1", "app-ios-writer-r1"])
+        report = scan(["app-ios-writer-r1", "app-ios-writer-r1", "app-reviewer-writer-r1", "app-des-goal-tl-r1"])
         self.assertEqual(report["reclaimable_panes"], [])
-        self.assertEqual(len(report["active_m1_panes"]), 2)
+        self.assertEqual(len(report["active_m1_panes"]), 4)
         self.assertEqual(module._match_worktree_to_goal(self.scratch / "app-ios", {"app": {}}), "__ambiguous__")
         dev = self.scratch / "dev"
         repo, worktree = dev / "project", dev / "worktrees/app-ios"
