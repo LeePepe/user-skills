@@ -1,21 +1,256 @@
 {
   "schema": "skill-eval-cases/v1",
   "version": 1,
-  "updated": "2026-11-20",
+  "updated": "2026-11-28",
   "trigger_evals": [
-    {"query": "ingest and classify UI inspiration into the design vault", "should_trigger": true, "near_miss_skill": ""},
-    {"query": "find a catalog pattern for a mobile filter recovery flow", "should_trigger": true, "near_miss_skill": ""},
-    {"query": "author an implementation-ready design.md and Visual Traceback", "should_trigger": false, "near_miss_skill": "my-designer"},
-    {"query": "rebalance my personal ETF holdings", "should_trigger": false, "near_miss_skill": "portfolio-advisor"}
+    {
+      "query": "ingest and classify UI inspiration into the design vault",
+      "should_trigger": true,
+      "near_miss_skill": ""
+    },
+    {
+      "query": "find a catalog pattern for a mobile filter recovery flow",
+      "should_trigger": true,
+      "near_miss_skill": ""
+    },
+    {
+      "query": "author an implementation-ready design.md and Visual Traceback",
+      "should_trigger": false,
+      "near_miss_skill": "my-designer"
+    },
+    {
+      "query": "rebalance my personal ETF holdings",
+      "should_trigger": false,
+      "near_miss_skill": "portfolio-advisor"
+    }
   ],
   "active_cases": [
-    {"id": "EV-001", "title": "Top-level catalog and vault query", "platforms": ["desktop", "mobile", "web"], "dimensions": ["visual-style"], "containers": ["catalog", "vault"], "cmd": "python3 skills/design-studio/scripts/design_catalog.py --query filter --top 3", "expect_exit": 0, "expect_stdout_contains": ["\"ok\": true", "\"matches\""], "registered_at": "2026-11-20"},
-    {"id": "EV-002", "title": "Vault search remains routed", "platforms": ["mobile"], "dimensions": ["motion-interaction"], "containers": ["vault"], "cmd": "python3 skills/design-studio/scripts/design_catalog.py vault-search --platform mobile --query gesture --top 3", "expect_exit": 0, "expect_stdout_contains": ["\"matches\"", "\"progressive_disclosure\""], "registered_at": "2026-11-20"},
-    {"id": "EV-003", "title": "Classify uses the canonical taxonomy drawer", "platforms": ["desktop", "mobile", "web"], "dimensions": ["visual-style", "layout-navigation"], "containers": ["taxonomy"], "cmd": "python3 skills/design-studio/scripts/design_catalog.py classify --text 'mobile glass card layout' --no-jev", "expect_exit": 0, "expect_stdout_contains": ["\"status\"", "\"cards\""], "registered_at": "2026-11-20"},
-    {"id": "EV-004", "title": "Render check verifies toolchain-20-matrix parity and no-arg exit=2", "platforms": ["desktop", "mobile", "web"], "dimensions": ["visual-style"], "containers": ["catalog"], "cmd": "python3 skills/design-studio/scripts/design_catalog.py render --check", "expect_exit": 0, "negative_cmd": "python3 skills/design-studio/scripts/design_catalog.py", "expect_fail_exit": 2, "negative_stderr_contains": ["skills/design-studio/references/eval-cases.json"], "registered_at": "2026-11-21"},
-    {"id": "EV-005", "title": "Recommend pattern for Web Operate surface with --surface alias", "platforms": ["web"], "dimensions": ["motion-interaction"], "containers": ["catalog"], "cmd": "python3 skills/design-studio/scripts/design_catalog.py recommend --platform web --surface Operate --kind pattern", "expect_exit": 0, "expect_stdout_contains": ["\"recommendations\""], "registered_at": "2026-11-21"},
-    {"id": "EV-006", "title": "2+1+1 Cross-domain archetype ref dry-run vault ingest", "platforms": ["desktop", "mobile"], "dimensions": ["visual-style", "color-palette"], "containers": ["vault"], "cmd": "python3 skills/design-studio/scripts/design_catalog.py vault-ingest --text 'Things 3 calm paper checklist card' --archetype-ref VS-005 --no-jev --dry-run", "expect_exit": 0, "expect_stdout_contains": ["\"archetype_ref\": \"VS-005\"", "\"dry_run\": true"], "registered_at": "2026-11-21"},
-    {"id": "EV-007", "title": "L3 soft fact collector stats summarizes catalog, vault, and 2+1+1 spectrum", "platforms": ["desktop", "mobile", "web"], "dimensions": ["visual-style", "color-palette"], "containers": ["catalog", "vault", "taxonomy"], "cmd": "python3 skills/design-studio/scripts/design_catalog.py stats", "expect_exit": 0, "expect_stdout_contains": ["\"schema\": \"design-studio-stats/v1\"", "\"creative_spectrum_2_1_1\"", "\"eval-cases.json\""], "registered_at": "2026-11-21"},
-    {"id": "EV-008", "title": "Helper modules expose standalone self-check CLI entrypoints", "platforms": ["web", "mobile", "desktop"], "dimensions": ["layout-navigation"], "containers": ["gallery"], "cmd": "python3 skills/design-studio/scripts/gallery_chooser.py --self-check", "expect_exit": 0, "expect_stdout_contains": ["\"ok\": true", "\"gallery_chooser\""], "registered_at": "2026-11-21"}
+    {
+      "id": "EV-001",
+      "title": "Top-level catalog and vault query",
+      "platforms": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "dimensions": [
+        "visual-style"
+      ],
+      "containers": [
+        "catalog",
+        "vault"
+      ],
+      "cmd": "python3 skills/design-studio/scripts/design_catalog.py --query filter --top 3",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "\"ok\": true",
+        "\"matches\""
+      ],
+      "registered_at": "2026-11-20"
+    },
+    {
+      "id": "EV-002",
+      "title": "Vault search remains routed",
+      "platforms": [
+        "mobile"
+      ],
+      "dimensions": [
+        "motion-interaction"
+      ],
+      "containers": [
+        "vault"
+      ],
+      "cmd": "python3 skills/design-studio/scripts/design_catalog.py vault-search --platform mobile --query gesture --top 3",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "\"matches\"",
+        "\"progressive_disclosure\""
+      ],
+      "registered_at": "2026-11-20"
+    },
+    {
+      "id": "EV-003",
+      "title": "Classify uses the canonical taxonomy drawer",
+      "platforms": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "dimensions": [
+        "visual-style",
+        "layout-navigation"
+      ],
+      "containers": [
+        "taxonomy"
+      ],
+      "cmd": "python3 skills/design-studio/scripts/design_catalog.py classify --text 'mobile glass card layout' --no-jev",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "\"status\"",
+        "\"cards\""
+      ],
+      "registered_at": "2026-11-20"
+    },
+    {
+      "id": "EV-004",
+      "title": "Render check verifies toolchain-20-matrix parity and no-arg exit=2",
+      "platforms": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "dimensions": [
+        "visual-style"
+      ],
+      "containers": [
+        "catalog"
+      ],
+      "cmd": "python3 skills/design-studio/scripts/design_catalog.py render --check",
+      "expect_exit": 0,
+      "negative_cmd": "python3 skills/design-studio/scripts/design_catalog.py",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "skills/design-studio/references/eval-cases.json"
+      ],
+      "registered_at": "2026-11-21"
+    },
+    {
+      "id": "EV-005",
+      "title": "Recommend pattern for Web Operate surface with --surface alias",
+      "platforms": [
+        "web"
+      ],
+      "dimensions": [
+        "motion-interaction"
+      ],
+      "containers": [
+        "catalog"
+      ],
+      "cmd": "python3 skills/design-studio/scripts/design_catalog.py recommend --platform web --surface Operate --kind pattern",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "\"recommendations\""
+      ],
+      "registered_at": "2026-11-21"
+    },
+    {
+      "id": "EV-006",
+      "title": "2+1+1 Cross-domain archetype ref dry-run vault ingest",
+      "platforms": [
+        "desktop",
+        "mobile"
+      ],
+      "dimensions": [
+        "visual-style",
+        "color-palette"
+      ],
+      "containers": [
+        "vault"
+      ],
+      "cmd": "python3 skills/design-studio/scripts/design_catalog.py vault-ingest --text 'Things 3 calm paper checklist card' --archetype-ref VS-005 --no-jev --dry-run",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "\"archetype_ref\": \"VS-005\"",
+        "\"dry_run\": true"
+      ],
+      "registered_at": "2026-11-21"
+    },
+    {
+      "id": "EV-007",
+      "title": "L3 soft fact collector stats summarizes catalog, vault, and 2+1+1 spectrum",
+      "platforms": [
+        "desktop",
+        "mobile",
+        "web"
+      ],
+      "dimensions": [
+        "visual-style",
+        "color-palette"
+      ],
+      "containers": [
+        "catalog",
+        "vault",
+        "taxonomy"
+      ],
+      "cmd": "python3 skills/design-studio/scripts/design_catalog.py stats",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "\"schema\": \"design-studio-stats/v1\"",
+        "\"creative_spectrum_2_1_1\"",
+        "\"eval-cases.json\""
+      ],
+      "registered_at": "2026-11-21"
+    },
+    {
+      "id": "EV-008",
+      "title": "Helper modules expose standalone self-check CLI entrypoints",
+      "platforms": [
+        "web",
+        "mobile",
+        "desktop"
+      ],
+      "dimensions": [
+        "layout-navigation"
+      ],
+      "containers": [
+        "gallery"
+      ],
+      "cmd": "python3 skills/design-studio/scripts/gallery_chooser.py --self-check",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "\"ok\": true",
+        "\"gallery_chooser\""
+      ],
+      "registered_at": "2026-11-21"
+    },
+    {
+      "id": "EV-009",
+      "title": "Hybrid RAG --rag-query retrieves design-vault cards with 8D taxonomy and measured hex palette",
+      "tags": [
+        "hybrid-rag",
+        "design-vault",
+        "palette"
+      ],
+      "cmd": "python3 skills/design-studio/scripts/design_catalog.py --rag-query \"温润瑞士纸感 #FAF7F2\" --top-k 3 --json",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "\"schema\": \"design-vault-rag/v1\""
+      ],
+      "expect_json_subset": {
+        "ok": true,
+        "corpus_scope": "design-vault"
+      },
+      "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-010",
+      "title": "Counter-case: cross-vault query to knowledge-vault is rejected by VaultIsolationError",
+      "tags": [
+        "counter-case",
+        "vault-isolation",
+        "hybrid-rag"
+      ],
+      "negative_cmd": "python3 skills/design-studio/scripts/design_catalog.py --rag-query \"note\" --corpus-scope knowledge-vault --json",
+      "expect_fail_exit": 1,
+      "negative_stderr_contains": [
+        "corpus_scope='design-vault'"
+      ],
+      "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-011",
+      "title": "Counter-case: cross-vault --vault-dir pointing into knowledge-vault is rejected",
+      "tags": [
+        "counter-case",
+        "vault-isolation",
+        "hybrid-rag"
+      ],
+      "negative_cmd": "python3 skills/design-studio/scripts/design_catalog.py search --query \"note\" --vault-dir knowledge-vault --json",
+      "expect_fail_exit": 1,
+      "negative_stderr_contains": [
+        "knowledge-vault isolation"
+      ],
+      "registered_at": "2026-11-28"
+    }
   ]
 }
