@@ -132,6 +132,18 @@ VALVE_FINDING_GUIDANCE: dict[str, tuple[str, str]] = {
         f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
         "Advisory: legacy script is now <= 800 lines; graduate it out of LEGACY_SCRIPT_LINE_CAPS so script-lines (<=1,000) protects it permanently.",
     ),
+    "malformed-code-fence": (
+        f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
+        "Advisory: split single-line triple-backtick code fences onto separate lines (opening ```lang, command lines, closing ```).",
+    ),
+    "ast-namespace-pollution": (
+        f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
+        "Advisory: avoid globals().setdefault / __dict__.setdefault circular namespace injection and duplicate helper functions across sibling scripts/*_core/*.py modules.",
+    ),
+    "boilerplate-table-decay": (
+        f"{VALVE_REFERENCE_BASE}#valve-4--sharing-and-metabolism",
+        "Advisory: avoid Markdown tables (>=8 rows) where >=50% of rows repeat identical >=20-char boilerplate cells; sink invariants into scripts or write distinct row contracts.",
+    ),
     "fenced-code-lines": (
         f"{VALVE_REFERENCE_BASE}#valve-3--budgets",
         "Keep fenced code blocks in Markdown <= 25 lines; move longer code to scripts/.",

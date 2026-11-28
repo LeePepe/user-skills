@@ -21,9 +21,7 @@ def _redact_command_sample(raw_cmd: str, *, skills_root: Path | None=None, dev_r
         text = text.replace(home_str, '~')
     text = re.sub('(?:/' + 'Users|/home)/[^/\\s\\"\']+', '~', text)
     text = re.sub('/private/var/' + 'folders/[^\\s\\"\']+', '/tmp/<temp>', text)
-    if len(text) > 220:
-        text = text[:217].rstrip() + '...'
-    return text
+    return text[:217].rstrip() + '...' if len(text) > 220 else text
 
 def _percentile(values: Sequence[float], pct: float) -> float | None:
     if not values:
@@ -66,9 +64,7 @@ def _compute_pkg_version_fingerprint(pkg_dir: Path) -> dict[str, Any]:
             if isinstance(mdoc, Mapping) and str(mdoc.get('version') or '').strip():
                 plugin_version = str(mdoc['version']).strip()
     git_root, rel_path = _find_git_root_for_path(pkg_dir)
-    commit_count = 0
-    subtree_sha = ''
-    last_modified_epoch: int | None = None
+    commit_count, subtree_sha, last_modified_epoch = (0, '', None)
     if git_root is not None and pkg_dir.is_dir():
         clean_env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
         with contextlib.suppress(OSError, subprocess.SubprocessError):
@@ -85,28 +81,22 @@ def _compute_pkg_version_fingerprint(pkg_dir: Path) -> dict[str, Any]:
         h = hashlib.sha256()
         if pkg_dir.is_dir():
             for fp in sorted(pkg_dir.rglob('*')):
-                if not fp.is_file() or '__pycache__' in fp.parts or fp.name.startswith('.'):
-                    continue
-                with contextlib.suppress(OSError):
-                    h.update(fp.relative_to(pkg_dir).as_posix().encode('utf-8') + b'\x00' + fp.read_bytes() + b'\x00')
+                if fp.is_file() and '__pycache__' not in fp.parts and (not fp.name.startswith('.')):
+                    with contextlib.suppress(OSError):
+                        h.update(fp.relative_to(pkg_dir).as_posix().encode('utf-8') + b'\x00' + fp.read_bytes() + b'\x00')
         subtree_sha = h.hexdigest()[:7]
-    if commit_count <= 0:
-        commit_count = 1
-    return {'skill_version': f'v{commit_count}@{subtree_sha}', 'commit_count': commit_count, 'subtree_sha': subtree_sha, 'plugin_version': plugin_version, 'last_modified_epoch': last_modified_epoch}
+    return {'skill_version': f'v{max(1, commit_count)}@{subtree_sha}', 'commit_count': max(1, commit_count), 'subtree_sha': subtree_sha, 'plugin_version': plugin_version, 'last_modified_epoch': last_modified_epoch}
 
 def stamp_skill_telemetry_event(event: Mapping[str, Any], *, inventory: Mapping[str, Mapping[str, Any]] | None=None, skills_root: Path | None=None) -> dict[str, Any]:
     """Stamp `skill_version` and `subtree_sha` on a `skill_turn`, `reference_hit`, or `script_call` event."""
     out = dict(event)
-    kind = str(out.get('kind') or '').strip()
-    sk = _norm_skill(str(out.get('skill') or ''))
+    kind, sk = (str(out.get('kind') or '').strip(), _norm_skill(str(out.get('skill') or '')))
     if kind not in {'skill_turn', 'reference_hit', 'script_call'} or not sk:
         return out
     meta = inventory.get(sk) if inventory is not None else None
     if meta is None:
-        s_root = skills_root or DEFAULT_SKILLS_ROOT
-        pkg_dir = s_root / sk
-        if pkg_dir.is_dir():
-            meta = _compute_pkg_version_fingerprint(pkg_dir)
+        pkg_dir = (skills_root or DEFAULT_SKILLS_ROOT) / sk
+        meta = _compute_pkg_version_fingerprint(pkg_dir) if pkg_dir.is_dir() else None
     if isinstance(meta, Mapping):
         if not out.get('skill_version') and meta.get('skill_version'):
             out['skill_version'] = str(meta['skill_version'])
@@ -118,10 +108,7 @@ def _is_call_post_fix(call_ts: datetime | None, call_skill_version: str | None, 
     """Return True if an error occurred on the current version or after the last-modified commit watermark."""
     if call_skill_version and current_skill_version and (call_skill_version != current_skill_version):
         return False
-    if watermark_epoch is not None and call_ts is not None:
-        if call_ts.timestamp() < float(watermark_epoch):
-            return False
-    return True
+    return not (watermark_epoch is not None and call_ts is not None and (call_ts.timestamp() < float(watermark_epoch)))
 
 def _parse_ts(raw: Any, fallback: datetime | None=None) -> datetime | None:
     if raw is None or raw == '':

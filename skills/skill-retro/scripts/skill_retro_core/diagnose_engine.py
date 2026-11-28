@@ -318,7 +318,7 @@ def compute_skill_retro_diagnostics(*, inventory: Mapping[str, Mapping[str, Any]
     eval_quality_by_skill: dict[str, dict[str, Any]] = {}
     for sk_name, meta in sorted(inventory.items()):
         pkg_p = Path(str(meta.get('path') or s_root / sk_name))
-        ir = meta.get('internal_reality') if isinstance(meta.get('internal_reality'), Mapping) else internal_reality_check(pkg_p)
+        ir = meta.get('internal_reality') if isinstance(meta.get('internal_reality'), Mapping) else internal_reality_check(pkg_p, skills_root=s_root)
         internal_reality_by_skill[sk_name] = dict(ir)
         esc_map = wh_meta['skill_escapes'].get(sk_name, {'impl_bug': 0, 'spec_gap': 0})
         sk_escapes = int(esc_map.get('impl_bug') or 0) + int(esc_map.get('spec_gap') or 0)

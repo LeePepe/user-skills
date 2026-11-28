@@ -368,7 +368,7 @@ def _discover_skill_inventory(skills_root: Path | None=None, dev_root: Path | No
                     if sc_epoch is not None:
                         script_watermarks[rel_sc] = sc_epoch
             ver_info = _compute_pkg_version_fingerprint(pkg)
-            reality_info = internal_reality_check(pkg)
+            reality_info = internal_reality_check(pkg, skills_root=root)
             eval_counter_ratio = round(eval_counter_cases / eval_cases, 4) if eval_cases > 0 else 0.0
             refs_tokens_est = sum((int(r.get('tokens_est') or 0) for r in ref_entries))
             bundle_kb = round((skill_md_bytes_len + total_refs_bytes + total_scripts_bytes) / 1024.0, 1)

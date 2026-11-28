@@ -1,7 +1,7 @@
 {
   "name": "skill-contract",
   "description": "Audit and evolve skills with bounded contracts, shared runtime modules, eval drawers, and script modularity valves.",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "skills": [
     "SKILL.md"
   ],

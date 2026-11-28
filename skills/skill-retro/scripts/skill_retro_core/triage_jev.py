@@ -120,7 +120,7 @@ def probe_skills(*, skill: str | None=None, aspect: str | None=None, fast: bool=
             slow_cnt = int(t_sig.get('l2_latency_sinks') or 0)
             p1_bonus = float(t_sig.get('p1_proposal_bonus') or 0.0)
             unwired_cnt = max(int(t_sig.get('l1_unwired_drawers') or 0), unwired_zero_hit if domain_fails > 0 and meta.get('scripts') else 0)
-            ir_info = meta.get('internal_reality') or internal_reality_check(pkg_p)
+            ir_info = meta.get('internal_reality') or internal_reality_check(pkg_p, skills_root=s_root)
             cli_drift_list = list(ir_info.get('internal_doc_cli_drift') or [])
             broken_refs_list = list(ir_info.get('internal_broken_refs') or [])
             cli_drift_cnt = len(cli_drift_list)

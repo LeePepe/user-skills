@@ -1,7 +1,7 @@
 {
   "schema": "skill-eval-cases/v1",
   "version": 1,
-  "updated": "2026-11-27",
+  "updated": "2026-11-28",
   "active_cases": [
     {
       "id": "EV-001",
@@ -269,6 +269,23 @@
         "skills/skill-contract/references/valves-and-metabolism.md#valve-1--sink-deterministic-checks"
       ],
       "registered_at": "2026-11-27"
+    },
+    {
+      "id": "EV-017",
+      "title": "Layer A soft advisories: malformed-code-fence, ast-namespace-pollution, and boilerplate-table-decay stay soft_advisory_exit_0",
+      "tags": [
+        "audit",
+        "counter-case",
+        "negative",
+        "hygiene",
+        "valve-3"
+      ],
+      "forbidden_regex": "^\\s*```(?![`])[A-Za-z0-9_-]+[ \\t]+\\S.*?```(?![`])\\s*$",
+      "bad_snippet": "```bash swift build --package-path Packages/Feature swift test --package-path Packages/Feature ```",
+      "good_snippet": "```bash\nswift build --package-path Packages/Feature\nswift test --package-path Packages/Feature\n```",
+      "cmd": "python3 -I -B scripts/test_skill_contract_retro_locks.py SkillContractRetroLocksTests.test_layer_a_soft_advisories_malformed_fence_namespace_and_table_decay",
+      "expect_exit": 0,
+      "registered_at": "2026-11-28"
     }
   ],
   "trigger_evals": [
