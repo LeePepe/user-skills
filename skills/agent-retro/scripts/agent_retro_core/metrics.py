@@ -443,3 +443,198 @@ def _metric_scan(events: list[dict[str, Any]], handoffs: list[dict[str, Any]], s
         if "CANCELLED" in blob and "PR_CHECK_FAILED" in blob:
             observations.append(_observation("E4_unfaithful_receipt_and_cancelled_noise", "exec", 1, ["CANCELLED run was classified as PR_CHECK_FAILED"], sessions=1))
     return observations
+
+
+_QUALITY_TIER = "soft_advisory_exit_0"
+_QUALITY_REMEDIATION = (
+    "Add Shared-Token Adversarial Twin (good_snippet sharing tokens with bad_snippet in valid AST/branch scope) "
+    "in eval-cases.json during periodic retro+eval."
+)
+_QUALITY_MUTATIONS = {"edit", "create", "apply_patch", "write", "patch"}
+_QUALITY_EDGE_WORDS = re.compile(
+    r"regex|re\.compile|negation|boundary|false[- ]positive|switch|ternary|prefix", re.I
+)
+_QUALITY_SCRIPT = re.compile(
+    r"(?:^|/)(?:[^/]*_guard|verify_[^/]+|classify_[^/]+|semiotics_gates)\.py$|"
+    r"(?:^|/)skills/[^/]+/scripts/[^/]+\.py$", re.I
+)
+
+
+def _quality_added_text(event: dict[str, Any]) -> str:
+    args = _arguments(event)
+    values: list[Any] = []
+    for key in ("new_str", "newStr", "file_text", "fileText", "patch", "diff", "content"):
+        if key in args:
+            values.append(args[key])
+    return _text(values).lower()
+
+
+def _quality_mutation_text(event: dict[str, Any]) -> str:
+    args = _arguments(event)
+    values: list[Any] = [args.get(key) for key in ("old_str", "oldStr") if key in args]
+    return (_quality_added_text(event) + " " + _text(values) + " " + _text(args)).lower()
+
+
+def _quality_target(event: dict[str, Any]) -> str:
+    args = _arguments(event)
+    return str(args.get("path") or args.get("file") or _field(event, "path", "file") or "").strip()
+
+
+def _quality_goal_ids(seq: list[dict[str, Any]]) -> list[str]:
+    values = {_goal_key(event) for event in seq if _goal_key(event)}
+    return sorted(str(value) for value in values if value)
+
+
+def _quality_skill(text: str, fallback: str = "team-lead") -> str:
+    candidates = re.findall(r"skills/([A-Za-z0-9][A-Za-z0-9_-]*)/", text)
+    candidates += re.findall(r"(?:agent|skill)-retro-([A-Za-z0-9][A-Za-z0-9_-]*)", text, re.I)
+    candidates += re.findall(r"(?:^|[^A-Za-z])us-([A-Za-z0-9][A-Za-z0-9_-]*)-", text, re.I)
+    for candidate in candidates:
+        if is_valid_skill_slug(candidate, require_repo_dir=True):
+            return candidate
+    return fallback if is_valid_skill_slug(fallback, require_repo_dir=True) else "team-lead"
+
+
+def _quality_negative_probe(event: dict[str, Any]) -> bool:
+    if _tool_name(event) not in {"bash", "shell", "run_command", "terminal"}:
+        return False
+    command = _command(event).lower()
+    return bool(
+        _exit_code(event) == 1
+        or re.search(r"--(?:bad-)?snippet|counter(?:example)?|negative|--bad(?:\s|$)", command)
+    )
+
+
+def _quality_item(kind: str, subkind: str, *, skill: str, count: int,
+                  session_ids: Iterable[str], goal_ids: Iterable[str], evidence: Iterable[str]) -> dict[str, Any]:
+    valid_skill = skill if is_valid_skill_slug(skill, require_repo_dir=True) else "team-lead"
+    return {
+        "kind": kind, "subkind": subkind, "tier": _QUALITY_TIER,
+        "related_metric": "E2_r3_plus_divergence", "skill": valid_skill,
+        "upstream_skill": valid_skill, "count": int(count),
+        "session_ids": sorted({str(value) for value in session_ids if str(value)}),
+        "goal_ids": sorted({str(value) for value in goal_ids if str(value)}),
+        "evidence": [_redact(str(value)) for value in list(evidence)[:5]],
+        "remediation": _QUALITY_REMEDIATION,
+    }
+
+
+def _session_quality_rows(events: list[dict[str, Any]], handoffs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Find session-quality smells without changing the existing 27 metrics."""
+    groups = _session_groups(events)
+    rows: list[dict[str, Any]] = []
+
+    for sid, seq in groups.items():
+        tools = _tool_events(seq)
+        mutations = [event for event in tools if _tool_name(event) in _QUALITY_MUTATIONS]
+        goals = _quality_goal_ids(seq)
+        text = " ".join(_event_blob(event) for event in seq)
+        skill_text = " ".join(_quality_target(event) + " " + _text(_data(event)) for event in seq)
+        skill = _quality_skill(skill_text, _first_fault_skill(text, _role_for(seq)))
+
+        regex_mutations: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for event in mutations:
+            target = _quality_target(event)
+            if _QUALITY_SCRIPT.search(target) and re.search(r"re\.compile|regex", _quality_mutation_text(event), re.I):
+                regex_mutations[target].append(event)
+        regex_churn = False
+        for target, changed in sorted(regex_mutations.items()):
+            if len(changed) >= 3:
+                regex_churn = True
+                rows.append(_quality_item(
+                    "session_false_positive_churn", "multi_round_regex_boundary_rework", skill=skill,
+                    count=len(changed), session_ids=[sid], goal_ids=goals,
+                    evidence=[f"{sid}: {len(changed)} regex mutations in {target}"],
+                ))
+        review_fail_count = len(re.findall(r"(?:EVT=)?REVIEW_FAIL|review(?:er)? fail|changes requested", text, re.I))
+        if review_fail_count >= 2 and _QUALITY_EDGE_WORDS.search(text) and _QUALITY_SCRIPT.search(skill_text) and not regex_churn:
+            rows.append(_quality_item(
+                "session_false_positive_churn", "multi_round_regex_boundary_rework", skill=skill,
+                count=review_fail_count, session_ids=[sid], goal_ids=goals,
+                evidence=[f"{sid}: {review_fail_count} review-fail rounds cite regex/boundary false-positive edges"],
+            ))
+
+        waiver_events = [event for event in mutations if "design-contract-allow" in _quality_added_text(event)]
+        if waiver_events:
+            rows.append(_quality_item(
+                "session_false_positive_churn", "in_session_waiver_bypass_churn", skill=skill,
+                count=len(waiver_events), session_ids=[sid], goal_ids=goals,
+                evidence=[f"{sid}: waiver bypass inserted in {_quality_target(waiver_events[0])}"],
+            ))
+        validator_failures = [event for event in tools if _exit_code(event) == 1 and re.search(
+            r"skills/[^/]+/scripts/|(?:_guard|verify_|classify_|design_contract)\.py", _command(event) + " " + _quality_target(event), re.I
+        )]
+        relaxations = [event for event in mutations if re.search(
+            r"skills/[^/]+/(?:scripts|references)/|(?:_guard|verify_|classify_|design_contract)\.py", _quality_target(event), re.I
+        ) and re.search(r"re\.compile|regex", _quality_mutation_text(event), re.I)]
+        failure_positions = [tools.index(event) for event in validator_failures]
+        relaxation_positions = [tools.index(event) for event in relaxations]
+        if len(failure_positions) >= 2 and relaxation_positions and max(relaxation_positions) > failure_positions[1]:
+            rows.append(_quality_item(
+                "session_false_positive_churn", "in_session_waiver_bypass_churn", skill=skill,
+                count=len(validator_failures), session_ids=[sid], goal_ids=goals,
+                evidence=[f"{sid}: {len(validator_failures)} validator failures followed by regex relaxation"],
+            ))
+
+        negative_probe = any(_quality_negative_probe(event) for event in tools)
+        role = _role_for(seq)
+        writer = role == "writer" or "writer" in text
+        for event in mutations:
+            target = _quality_target(event)
+            added = _quality_added_text(event)
+            test_target = bool(re.search(r"(?:^|/)scripts/test_[^/]+\.py$|(?:^|/)test_[^/]+\.py$", target, re.I))
+            prose_echo = "assertin(" in added and ".read_text(" in added and re.search(r"\.md|skill\.md|references/", added)
+            vacuous = bool(re.search(r"text\(\s*['\"]clean['\"]\s*\)|text\(\s*['\"]clean['\"]", added, re.I))
+            if writer and test_target and (prose_echo or vacuous) and not negative_probe:
+                rows.append(_quality_item(
+                    "session_fake_or_unprobed_test", "prose_echo_or_vacuous_test_mutation", skill=skill,
+                    count=1, session_ids=[sid], goal_ids=goals,
+                    evidence=[f"{sid}: test mutation lacks a negative/counterexample CLI probe"],
+                ))
+                break
+
+        fake_command = [event for event in tools if re.search(r"echo\s+[^|;&\n]*\b(?:pytest|unittest)\b", _command(event), re.I)]
+        zero_pass = [event for event in tools if re.search(
+            r"[\"']?ok[\"']?\s*[:=]\s*(?:true|True)", _result_content(event)
+        ) and re.search(r"(?:files|node_count)[\"']?\s*[:=]\s*0", _result_content(event))]
+        if fake_command or zero_pass:
+            evidence = [f"{sid}: spoofed {'echo command' if fake_command else 'zero-file pass'}"]
+            rows.append(_quality_item(
+                "session_fake_or_unprobed_test", "fake_command_or_zero_file_pass", skill=skill,
+                count=len(fake_command) + len(zero_pass), session_ids=[sid], goal_ids=goals, evidence=evidence,
+            ))
+
+        reviewer_pass = role == "reviewer" or bool(re.search(r"EVT=REVIEW_PASS|V5\s+Verdict:\s*PASS|review(?:er)? pass", text, re.I))
+        code_change = any(
+            _is_code_path(candidate) and (_QUALITY_SCRIPT.search(candidate) or re.search(r"\.(?:py|sh|ts|swift)\b|gates?|scripts/", candidate, re.I))
+            for event in tools
+            for candidate in (_quality_target(event), _command(event))
+            if candidate
+        )
+        if reviewer_pass and code_change and not negative_probe:
+            rows.append(_quality_item(
+                "session_fake_or_unprobed_test", "reviewer_pass_without_adversarial_probe", skill=skill,
+                count=1, session_ids=[sid], goal_ids=goals,
+                evidence=[f"{sid}: reviewer pass without --snippet or counterexample probe"],
+            ))
+
+    for record in handoffs:
+        source = " ".join((record.get("ledger", ""), record.get("spec", ""), *(text for _, text in record.get("receipts", []))))
+        if len(re.findall(r"(?:EVT=)?REVIEW_FAIL|review(?:er)? fail|changes requested", source, re.I)) >= 2 and _QUALITY_EDGE_WORDS.search(source) and _QUALITY_SCRIPT.search(source):
+            related = [sid for sid, seq in groups.items() if record["name"].lower() in _event_blob(seq[0]) or any(record["name"].lower() in _event_blob(event) for event in seq)]
+            skill = _quality_skill(source + " " + record["name"], _first_fault_skill(source, "m1"))
+            rows.append(_quality_item(
+                "session_false_positive_churn", "multi_round_regex_boundary_rework", skill=skill,
+                count=2, session_ids=related, goal_ids=[record["name"]],
+                evidence=[f"{record['name']}: review-fail rounds cite regex/boundary false-positive edges"],
+            ))
+        if re.search(r"EVT=REVIEW_PASS|V5\s+Verdict:\s*PASS", source, re.I) and re.search(r"(?:\.py|\.sh|\.ts|\.swift|gates?|scripts/)", source, re.I):
+            related = [sid for sid, seq in groups.items() if record["name"].lower() in " ".join(_event_blob(event) for event in seq)]
+            if not any(_quality_negative_probe(event) for sid in related for event in _tool_events(groups[sid])):
+                skill = _quality_skill(source + " " + record["name"], "team-lead")
+                rows.append(_quality_item(
+                    "session_fake_or_unprobed_test", "reviewer_pass_without_adversarial_probe", skill=skill,
+                    count=1, session_ids=related, goal_ids=[record["name"]],
+                    evidence=[f"{record['name']}: reviewer receipt lacks an adversarial probe"],
+                ))
+    return rows

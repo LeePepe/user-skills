@@ -24,8 +24,12 @@ def _compact_print(payload: Any, as_json: bool, summary: bool = False) -> None:
         reduced = {key: payload[key] for key in (
             "schema", "ok", "entry_mode", "role_filter", "source", "coverage", "outcome_gate",
             "active_leases", "excluded_by_active_lease", "version_watermark", "skill_attribution",
-            "metrics", "observations", "horizon", "healthy_exemptions", "observation_pool", "k_cap",
+            "metrics", "observations", "soft_session_quality_advisories", "horizon", "healthy_exemptions", "observation_pool", "k_cap",
+            "picked", "picked_count", "healthy_no_issues", "worker_role_slot", "jev", "emitted", "m2_dispatch_plan",
+            "skill", "first_fault", "status", "positive_counter_replay",
         ) if key in payload}
+        if isinstance(reduced.get("soft_session_quality_advisories"), dict):
+            reduced["soft_session_quality_advisories"] = dict(reduced["soft_session_quality_advisories"])
         for key in ("issue_verified", "dry_run", "published", "written", "config", "path", "action"):
             if key in payload:
                 reduced[key] = payload[key]
@@ -33,6 +37,10 @@ def _compact_print(payload: Any, as_json: bool, summary: bool = False) -> None:
             reduced["observations"] = reduced.get("observations", [])[:size]
             reduced["healthy_exemptions"] = reduced.get("healthy_exemptions", [])[:size]
             reduced["observation_pool"] = reduced.get("observation_pool", [])[:size]
+            quality = reduced.get("soft_session_quality_advisories")
+            if isinstance(quality, dict):
+                quality["items"] = quality.get("items", [])[:size]
+                quality["by_skill"] = quality.get("by_skill", [])[:size]
             text = json.dumps(reduced, ensure_ascii=False, separators=(",", ":")) if as_json else text[:MAX_OUTPUT - 40] + "\n... output compacted"
             if len(text) <= MAX_OUTPUT:
                 break
@@ -429,6 +437,10 @@ def command_triage(args: argparse.Namespace) -> dict[str, Any]:
             emitted.append({"skill": skill, "spec": _safe_write(target / "spec.md", spec), "brief": _safe_write(target / "briefs" / "agent-retro.md", brief), "ledger": _safe_write(target / "ledger.md", ledger), "path": str(target)})
     return {"schema": "agent-retro-triage/v1", "ok": True, "picked": selected, "picked_count": len(selected), "healthy_no_issues": not selected,
             "excluded_by_active_lease": sorted(scan.get("excluded_by_active_lease", [])),
+            "soft_session_quality_advisories": scan.get("soft_session_quality_advisories", {
+                "tier": "soft_advisory_exit_0", "false_positive_churn_count": 0,
+                "fake_or_unprobed_test_count": 0, "total_count": 0, "by_skill": [], "items": [],
+            }),
             "worker_role_slot": {"role": "explorer", "tier": "worker", "tokens": 0},
             "jev": {**jev, "mock": bool(mock), "mock_payload": mock},
             "emitted": emitted, "m2_dispatch_plan": {"schema": "agent-retro-m2-dispatch-plan/v1", "m2_coordinator_count": 1,
@@ -478,8 +490,17 @@ def command_emit_relay(args: argparse.Namespace) -> dict[str, Any]:
 def command_diagnose(args: argparse.Namespace) -> dict[str, Any]:
     scan = _scan(args)
     matches = [x for x in scan["observations"] if x.get("upstream_skill") == args.skill or x.get("skill") == args.skill]
+    quality = _soft_session_quality_advisories([], [], args.skill) if not scan.get("soft_session_quality_advisories") else {
+        **scan["soft_session_quality_advisories"],
+        "by_skill": [row for row in scan["soft_session_quality_advisories"].get("by_skill", []) if row.get("skill") == args.skill],
+        "items": [row for row in scan["soft_session_quality_advisories"].get("items", []) if row.get("upstream_skill") == args.skill or row.get("skill") == args.skill],
+    }
+    quality["false_positive_churn_count"] = sum(int(row.get("count", 0) or 0) for row in quality["items"] if row.get("kind") == "session_false_positive_churn")
+    quality["fake_or_unprobed_test_count"] = sum(int(row.get("count", 0) or 0) for row in quality["items"] if row.get("kind") == "session_fake_or_unprobed_test")
+    quality["total_count"] = quality["false_positive_churn_count"] + quality["fake_or_unprobed_test_count"]
     return {"schema": "agent-retro-diagnose/v1", "ok": True, "skill": args.skill, "observations": matches,
-            "first_fault": matches[0] if matches else None, "status": "actionable" if matches else "HEALTHY_NO_ISSUES",
+            "soft_session_quality_advisories": quality, "first_fault": matches[0] if matches else None,
+            "status": "actionable" if matches else "HEALTHY_NO_ISSUES",
             "positive_counter_replay": {"required": bool(matches), "positive": True, "counter": True}}
 
 
