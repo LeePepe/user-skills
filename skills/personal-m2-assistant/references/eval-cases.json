@@ -190,6 +190,39 @@
         "strict prompt completeness guard"
       ],
       "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-011",
+      "title": "Handoff Hybrid RAG --rag-query returns bounded JSON corpus hits",
+      "tags": [
+        "hybrid-rag",
+        "handoff",
+        "cli"
+      ],
+      "cmd": "python3 skills/personal-m2-assistant/scripts/m2-router.py --rag-query 'notification toggle spec' --handoff-root /nonexistent-handoff-root --json",
+      "expect_exit": 0,
+      "expect_json_subset": {
+        "ok": true,
+        "corpus_scope": "handoff",
+        "hit_count": 0
+      },
+      "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-012",
+      "title": "Counter-case: --rag-query rejects blank query with self-disclosing exit 2",
+      "tags": [
+        "hybrid-rag",
+        "counter-case",
+        "self-disclosing"
+      ],
+      "negative_cmd": "python3 skills/personal-m2-assistant/scripts/m2-router.py --rag-query '   '",
+      "expect_fail_exit": 2,
+      "negative_stderr_contains": [
+        "--rag-query requires a non-empty query",
+        "skills/personal-m2-assistant/references/eval-cases.json"
+      ],
+      "registered_at": "2026-11-28"
     }
   ],
   "trigger_evals": [
