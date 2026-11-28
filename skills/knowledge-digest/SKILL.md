@@ -13,6 +13,7 @@ user-invocable: true
 | Trigger | Single L1 drawer | Single L2 CLI |
 |---|---|---|
 | card shape | `references/templates.md` | `digest_vault.py precheck-card --file <md>` |
+| vault search | `references/templates.md` | `digest_vault.py search --query "<question>" --json` |
 | topic discovery | `references/card-templates.json` | `digest_vault.py discover-topics --top 3 --no-materialize` |
 | evaluation | `[eval-cases.json](references/eval-cases.json)` (Script-Only Regression Drawer: run via `skill_contract.py eval`, do not view) | `skill_contract.py eval --skill knowledge-digest --strict` |
 
@@ -42,6 +43,7 @@ user-invocable: true
 Store concepts in `concepts/`, craft in `craft/`, raw material in `raw/`, and update `index.md` under `~/Development/Personal/knowledge-vault/`. `discover-topics` remains candidate-only; it reads `topic-ledger.json` and keeps `design-studio` ingestion isolated; Owner approval is required before archive, publish, or any design-data promotion. Keep design ingestion isolated and do not auto-sync it.
 
 ```bash
+python3 skills/knowledge-digest/scripts/digest_vault.py search --query "<question>" --top-k 5 --json
 python3 skills/knowledge-digest/scripts/digest_vault.py precheck-card --file <md> --require-index
 python3 skills/knowledge-digest/scripts/digest_vault.py discover-topics --top 3 --no-materialize
 python3 skills/knowledge-digest/scripts/digest_vault.py reconcile-state
