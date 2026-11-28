@@ -250,13 +250,19 @@ class TeamLeadAgentRetroLockTests(unittest.TestCase):
 
     def test_failed_receipt_status_is_rejected_even_alongside_pass(self) -> None:
         module = load_module(FEEDBACK_GUARD, "feedback_failed_receipt_replay")
-        base = "Commit SHA: abcdef1234567890\nRole / Model: writer / replay-model\nVerification: PASS\n"
-        for field in ("Verification: failed", "Verification: FAIL", "status: failed", "V5 Verdict: FAIL", "Verdict: failure"):
+        root, brief, receipt, _ = self.fixture_repo(1, role="writer")
+        base = receipt.read_text(encoding="utf-8")
+        for field in (
+            "Verification: failed", "Verification: FAIL", "status: failed", "V5 Verdict: FAIL",
+            "Verdict: failure", "**Verification:** failed", "- **Status:** failed", "- `V5 Verdict:` **FAIL**",
+        ):
             with self.subTest(field=field):
-                receipt = self.scratch / "receipt.md"
                 receipt.write_text(base + field + "\n", encoding="utf-8")
                 self.assertTrue(module.validate_r10_receipt(base + field))
                 self.assertFalse(module._receipt_summary(receipt)["valid"])
+                report, res = self.run_guard(root, brief, receipt)
+                self.assertEqual(res.returncode, 1)
+                self.assertFalse(report["ok"])
         for status, valid in (("PASS", True), ("done", True), ("failed", False), ("FAIL", False)):
             receipt = self.scratch / "receipt.json"
             receipt.write_text(json.dumps({"commit_sha": "abcdef1234567890", "role": "writer", "model": "replay",

@@ -642,7 +642,7 @@ def _is_populated_token(val: str) -> bool:
 
 
 def _receipt_failed(text: str) -> bool:
-    return bool(re.search(r"(?im)^[\s>*-]*(?:\*\*)?(?:verification(?:\s+commands?)?|v5(?:\s+verdict)?|verdict|status)(?:\*\*)?[\s*`]*[:|=-][ \t]*[*`\"']*(?:fail(?:ed|ure)?|error|blocked|cancelled)\b", text))
+    return bool(re.search(r"(?im)^[\s>*-]*[*`]*\s*(?:verification(?:\s+commands?)?|v5(?:\s+verdict)?|verdict|status)[\s*`]*[:|=-][\s*`\"']*(?:fail(?:ed|ure)?|error|blocked|cancelled)\b", text))
 
 
 def validate_r10_receipt(receipt_text: str) -> list[str]:
