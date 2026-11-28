@@ -6,6 +6,7 @@ from .common import *
 from .cards_and_blog import archive_card, precheck_card, publish_blog
 from .discovery import discover_topics
 from .events_and_reconcile import handle_learning_event, reconcile_learning_state
+from .rag_search import search_knowledge_vault
 
 REFERENCE = "skills/knowledge-digest/references/templates.md"
 
@@ -79,6 +80,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p_rec.add_argument("--state-path", type=Path, default=None)
     p_rec.add_argument("--topic-ledger-path", type=Path, default=None)
     p_rec.add_argument("--apply", action="store_true", help="Write reconciled learned revisions to state and proposals.jsonl")
+
+    p_search = sub.add_parser("search", help="Hybrid RAG semantic search over knowledge-vault cards")
+    p_search.add_argument("--query", required=True, help="Search question or keywords")
+    p_search.add_argument("--top-k", dest="top_k", type=int, default=5, help="Maximum hits to return")
+    p_search.add_argument("--use-jev", dest="use_jev", action="store_true", help="Enable optional Jev Layer-1 reranking")
+    p_search.add_argument("--vault-dir", "--vault", dest="vault_dir", type=Path, default=DEFAULT_VAULT_DIR)
+    p_search.add_argument("--scope", dest="corpus_scope", default="knowledge-vault", help="Corpus scope (strictly knowledge-vault)")
+    p_search.add_argument("--json", action="store_true", help="Emit bounded JSON output (<=12KB)")
 
     return parser
 
@@ -165,5 +174,28 @@ def main(argv: list[str] | None = None) -> int:
             apply=args.apply,
         )
         print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0 if res.get("ok") else 1
+    if args.command == "search":
+        try:
+            res = search_knowledge_vault(
+                query=args.query,
+                vault_dir=args.vault_dir,
+                top_k=args.top_k,
+                use_jev=args.use_jev,
+                corpus_scope=args.corpus_scope,
+            )
+        except VaultIsolationError as exc:
+            err = {
+                "ok": False,
+                "status": "vault_isolation_error",
+                "error": redact_text(str(exc)),
+                "corpus_scope": "knowledge-vault",
+            }
+            print(compact_json_dumps(err, max_bytes=ACI_MAX_BYTES, preserve_keys=("ok", "status", "error", "corpus_scope")))
+            return 1
+        out = json.dumps(res, ensure_ascii=False, indent=None if args.json else 2)
+        if len(out.encode("utf-8")) > ACI_MAX_BYTES:
+            out = compact_json_dumps(res, max_bytes=ACI_MAX_BYTES, preserve_keys=("ok", "corpus_scope", "query", "hit_count", "hits"))
+        print(out)
         return 0 if res.get("ok") else 1
     return 1

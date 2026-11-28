@@ -1,7 +1,7 @@
 {
   "schema": "skill-eval-cases/v2",
   "skill": "knowledge-digest",
-  "updated": "2026-11-25",
+  "updated": "2026-11-28",
   "trigger_evals": [
     {
       "query": "帮我讲懂零知识证明并沉淀这个知识点到 knowledge-vault",
@@ -134,6 +134,54 @@
         "base64.b64decode"
       ],
       "registered_at": "2026-11-25"
+    },
+    {
+      "id": "EV-008",
+      "title": "digest_vault.py exposes Hybrid RAG search CLI subcommand",
+      "tags": [
+        "cli",
+        "rag"
+      ],
+      "cmd": "python3 skills/knowledge-digest/scripts/digest_vault.py search --help",
+      "expect_exit": 0,
+      "expect_stdout_contains": [
+        "--query",
+        "--top-k",
+        "--use-jev",
+        "--vault-dir",
+        "--json"
+      ],
+      "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-009",
+      "title": "digest_vault.py search rejects cross-vault design-studio scope with vault_isolation_error",
+      "tags": [
+        "counter-case",
+        "negative",
+        "isolation"
+      ],
+      "negative_cmd": "python3 skills/knowledge-digest/scripts/digest_vault.py search --query glass --scope design-studio --json",
+      "expect_fail_exit": 1,
+      "negative_stdout_contains": [
+        "vault_isolation_error"
+      ],
+      "registered_at": "2026-11-28"
+    },
+    {
+      "id": "EV-010",
+      "title": "digest_vault.py search rejects non-positive --top-k with invalid_top_k status",
+      "tags": [
+        "counter-case",
+        "negative",
+        "rag"
+      ],
+      "negative_cmd": "python3 skills/knowledge-digest/scripts/digest_vault.py search --query glass --top-k 0 --json",
+      "expect_fail_exit": 1,
+      "negative_stdout_contains": [
+        "invalid_top_k"
+      ],
+      "registered_at": "2026-11-28"
     }
   ]
 }
