@@ -272,6 +272,89 @@ class DesignStudioHybridRagTests(unittest.TestCase):
             parsed = json.loads(res.stdout)
             self.assertTrue(parsed["ok"])
             self.assertGreaterEqual(parsed["hit_count"], 1)
+            for hit in parsed["hits"]:
+                self.assertEqual(hit["taxonomy_8d"]["primary_dimension"], "visual-style")
+                self.assertEqual(hit["taxonomy_8d"]["prefix"], "VS")
+                self.assertEqual(hit["motion"]["motion_tier"], "M1")
+                self.assertIn("#FAF7F2", hit["hex_palette"])
+                self.assertTrue(any(sw["hex"] == "#FAF7F2" for sw in hit["measured_palette"]))
+
+            # Also verify real vault dense query (`--rag-query palette --top-k 25`) keeps enriched fields intact
+            real_dense = _run_catalog("--rag-query", "palette", "--top-k", "25", "--json")
+            self.assertEqual(real_dense.returncode, 0, real_dense.stderr)
+            self.assertLessEqual(len(real_dense.stdout.encode("utf-8")), 12_000)
+            real_parsed = json.loads(real_dense.stdout)
+            self.assertGreaterEqual(real_parsed["hit_count"], 1)
+            self.assertTrue(all(h["taxonomy_8d"]["primary_dimension"] for h in real_parsed["hits"]))
+            self.assertTrue(any(h["hex_palette"] for h in real_parsed["hits"]))
+
+    def test_enrichment_redacts_secrets_paths_and_respects_dataless_guard(self) -> None:
+        secret_tok = "ghp_" + "SecretTokenValue987654"
+        priv_path = "/" + "Users/alice/private/palette.png"
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp) / "design-vault"
+            vault.mkdir(parents=True)
+            vfile = vault / "desktop-macos.json"
+            vfile.write_text(
+                json.dumps(
+                    {
+                        "platform": "desktop",
+                        "inspirations": [
+                            {
+                                "id": "CL-950",
+                                "name": f"Secret Swatch Card {priv_path}",
+                                "category": "layout-craft",
+                                "motion_tier": "M2",
+                                "state_machine": f"idle -> {secret_tok} -> {priv_path}",
+                                "primary_dimension": "color-palette",
+                                "sub_category": "semantic-brand-palette",
+                                "platforms_v2": ["desktop"],
+                                "canonical_prompt": "Editorial palette with #0A84FF accent.",
+                                "measured_palette": [
+                                    {
+                                        "hex": "#0A84FF",
+                                        "ratio": 0.75,
+                                        "role": f"accent {secret_tok} {priv_path}",
+                                        "raw_leak": f"Bearer {secret_tok} {priv_path}",
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            res = _run_catalog("--rag-query", "Editorial palette #0A84FF", "--vault-dir", str(vault), "--json")
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertLessEqual(len(res.stdout.encode("utf-8")), 12_000)
+            self.assertNotIn(secret_tok, res.stdout)
+            self.assertNotIn("Users/alice", res.stdout)
+            self.assertNotIn("raw_leak", res.stdout)
+            hit = json.loads(res.stdout)["hits"][0]
+            self.assertEqual(hit["measured_palette"][0]["hex"], "#0A84FF")
+            self.assertIn("<redacted>", hit["motion"]["state_machine"])
+
+            # Simulate SF_DATALESS on the JSON file and verify _index_vault_cards skips it without reading
+            real_fstat = os.fstat
+            real_lstat = os.lstat
+            dataless_flag = getattr(os, "SF_DATALESS", 0x40000000)
+
+            class _FakeStat:
+                def __init__(self, st: os.stat_result) -> None:
+                    self._st = st
+                    self.st_flags = getattr(st, "st_flags", 0) | dataless_flag
+
+                def __getattr__(self, item: str):
+                    return getattr(self._st, item)
+
+            def fake_lstat(p, *a, **kw):
+                st = real_lstat(p, *a, **kw)
+                return _FakeStat(st) if Path(p).name == "desktop-macos.json" else st
+
+            with mock.patch("os.lstat", side_effect=fake_lstat):
+                idx = DESIGN_RAG._index_vault_cards(vault, "desktop")
+                self.assertEqual(idx, {})
 
     def test_design_rag_helper_cli_self_check_and_self_disclosing_error(self) -> None:
         ok_proc = subprocess.run(

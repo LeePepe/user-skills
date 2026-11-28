@@ -11,10 +11,14 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
+from skill_runtime.cli_contract import redact_payload, redact_text  # noqa: E402
 from skill_runtime.hybrid_rag import (  # noqa: E402
     ACI_MAX_BYTES,
     ALLOWED_CORPUS_SCOPES,
     VaultIsolationError,
+    _HEX_RE,
+    _read_bounded,
+    _safe_root,
     hybrid_search,
     load_design_vault_corpus,
 )
@@ -49,13 +53,17 @@ def _validate_design_vault_target(vault_dir: Path, corpus_scope: str) -> Path:
 
 def _index_vault_cards(vault_dir: Path, platform: str | None) -> dict[tuple[str, str], dict[str, Any]]:
     index: dict[tuple[str, str], dict[str, Any]] = {}
-    if not vault_dir.is_dir():
+    root = _safe_root(vault_dir)
+    if root is None:
         return index
     want = platform.strip().lower() if platform else None
-    for path in sorted(p for p in vault_dir.glob("*.json") if not p.is_symlink()):
+    for path in sorted(p for p in root.glob("*.json") if not p.is_symlink()):
+        raw = _read_bounded(path, root, 2 * 1024 * 1024)
+        if not raw.strip():
+            continue
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
             continue
         if not isinstance(payload, dict):
             continue
@@ -75,56 +83,102 @@ def _index_vault_cards(vault_dir: Path, platform: str | None) -> dict[tuple[str,
     return index
 
 
-def _enrich_hit(hit: dict[str, Any], card_index: dict[tuple[str, str], dict[str, Any]], dim_prefixes: dict[str, str]) -> dict[str, Any]:
-    meta = dict(hit.get("metadata") or {})
-    fplat = str(meta.get("platform") or "")
-    cid = str(meta.get("id") or hit.get("doc_id", "").split(":")[-1])
-    raw_card = card_index.get((fplat, cid), {})
+def _sanitize_swatches(raw_palette: Any, hex_palette: list[str]) -> list[dict[str, Any]]:
+    swatches: list[dict[str, Any]] = []
+    if isinstance(raw_palette, list):
+        for swatch in raw_palette:
+            if not isinstance(swatch, dict):
+                continue
+            hx = str(swatch.get("hex") or "").strip().upper()
+            if not hx or not _HEX_RE.fullmatch(hx):
+                continue
+            if hx not in hex_palette:
+                hex_palette.append(hx)
+            clean_swatch: dict[str, Any] = {"hex": hx}
+            if isinstance(swatch.get("ratio"), (int, float)):
+                clean_swatch["ratio"] = round(float(swatch["ratio"]), 4)
+            if swatch.get("role"):
+                clean_swatch["role"] = redact_text(str(swatch["role"]))[:48]
+            swatches.append(clean_swatch)
+            if len(swatches) >= 8:
+                break
+    if not swatches and hex_palette:
+        swatches = [{"hex": hx} for hx in hex_palette[:8]]
+    return swatches
+
+
+def _parse_doc_id(doc_id: str) -> tuple[str, str]:
+    parts = str(doc_id or "").split(":", 2)
+    if len(parts) == 3 and parts[0] == "design":
+        return parts[1], parts[2]
+    return "", parts[-1] if parts else ""
+
+
+def _enrich_hit(
+    hit: dict[str, Any],
+    card_index: dict[tuple[str, str], dict[str, Any]],
+    doc_meta_by_id: dict[str, dict[str, Any]],
+    dim_prefixes: dict[str, str],
+) -> dict[str, Any]:
+    doc_id = str(hit.get("doc_id") or "")
+    parsed_plat, parsed_cid = _parse_doc_id(doc_id)
+    meta = dict(doc_meta_by_id.get(doc_id) or {})
+    meta.update(dict(hit.get("metadata") or {}))
+    fplat = str(meta.get("platform") or parsed_plat)
+    cid = str(meta.get("id") or parsed_cid)
+    raw_card = card_index.get((fplat, cid)) or next((v for (p, k), v in card_index.items() if k == cid), {})
 
     primary_dim = str(raw_card.get("primary_dimension") or meta.get("primary_dimension") or "")
-    secondary_dims = list(raw_card.get("secondary_dimensions") or [])
+    secondary_dims = [str(x) for x in (raw_card.get("secondary_dimensions") or [])[:4]]
     sub_cat = str(raw_card.get("sub_category") or "")
     prefix = str(raw_card.get("prefix") or dim_prefixes.get(primary_dim) or (cid.split("-", 1)[0] if "-" in cid else ""))
-    hex_palette = list(meta.get("hex_palette") or [])
-    measured_palette = raw_card.get("measured_palette")
-    if isinstance(measured_palette, list):
-        for swatch in measured_palette:
-            if isinstance(swatch, dict) and swatch.get("hex") and str(swatch["hex"]).upper() not in hex_palette:
-                hex_palette.append(str(swatch["hex"]).upper())
-    else:
-        measured_palette = [{"hex": hx} for hx in hex_palette[:8]] if hex_palette else []
+    hex_palette = [
+        str(hx).upper()
+        for hx in dict.fromkeys([*(meta.get("hex_palette") or []), *(h.upper() for h in _HEX_RE.findall(json.dumps(raw_card, ensure_ascii=False)))])
+        if _HEX_RE.fullmatch(str(hx).upper())
+    ]
+    swatches = _sanitize_swatches(raw_card.get("measured_palette"), hex_palette)
 
     taxonomy_8d = {
         "prefix": prefix,
         "primary_dimension": primary_dim,
-        "secondary_dimensions": secondary_dims[:4],
+        "secondary_dimensions": secondary_dims,
         "sub_category": sub_cat,
-        "platforms": list(raw_card.get("platforms_v2") or raw_card.get("platforms") or ([fplat] if fplat else [])),
+        "platforms": [str(p) for p in (raw_card.get("platforms_v2") or raw_card.get("platforms") or ([fplat] if fplat else []))][:4],
     }
     motion = {
         "motion_tier": str(raw_card.get("motion_tier") or ""),
         "category": str(raw_card.get("category") or ""),
-        "state_machine": str(raw_card.get("state_machine") or "")[:180],
+        "state_machine": redact_text(str(raw_card.get("state_machine") or ""))[:180],
     }
-    meta.update({
+    enriched_meta = redact_payload({
         "id": cid,
+        "kind": str(meta.get("kind") or "inspirations"),
+        "platform": fplat,
+        "primary_dimension": primary_dim,
         "taxonomy_8d": taxonomy_8d,
         "motion": motion,
-        "measured_palette": measured_palette[:8] if isinstance(measured_palette, list) else [],
+        "measured_palette": swatches[:8],
         "hex_palette": hex_palette[:12],
     })
     enriched = dict(hit)
-    enriched["id"] = cid
-    enriched["taxonomy_8d"] = taxonomy_8d
-    enriched["motion"] = motion
-    enriched["measured_palette"] = meta["measured_palette"]
-    enriched["hex_palette"] = meta["hex_palette"]
-    enriched["metadata"] = meta
-    return enriched
+    enriched["id"] = redact_text(cid)
+    enriched["taxonomy_8d"] = enriched_meta["taxonomy_8d"]
+    enriched["motion"] = enriched_meta["motion"]
+    enriched["measured_palette"] = enriched_meta["measured_palette"]
+    enriched["hex_palette"] = enriched_meta["hex_palette"]
+    enriched["metadata"] = enriched_meta
+    return redact_payload(enriched)
+
+
+def _serialized_stdout_bytes(payload: dict[str, Any]) -> int:
+    return len((json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
 
 
 def _enforce_aci_budget(payload: dict[str, Any], max_bytes: int = ACI_MAX_BYTES) -> dict[str, Any]:
-    while len(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")) > max_bytes:
+    payload = redact_payload(payload)
+    # Note: do NOT duplicate `hits` under a second full `matches` list when budgeting; keep a compact summary or bounded hits
+    while _serialized_stdout_bytes(payload) > max_bytes:
         hits = payload.get("hits") or []
         if not hits:
             payload["query"] = str(payload.get("query") or "")[:128]
@@ -138,10 +192,23 @@ def _enforce_aci_budget(payload: dict[str, Any], max_bytes: int = ACI_MAX_BYTES)
             if isinstance(row.get("tags"), list) and len(row["tags"]) > 6:
                 row["tags"] = row["tags"][:6]
                 slimmed = True
-        if slimmed and len(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")) <= max_bytes:
+            if isinstance(row.get("metadata"), dict) and ("taxonomy_8d" in row["metadata"] or "motion" in row["metadata"]):
+                row["metadata"] = {
+                    "id": row["metadata"].get("id", row.get("id", "")),
+                    "platform": row["metadata"].get("platform", ""),
+                    "primary_dimension": row["metadata"].get("primary_dimension", ""),
+                }
+                slimmed = True
+        if slimmed and _serialized_stdout_bytes(payload) <= max_bytes:
             break
+        if len(hits) == 1:
+            only = hits[0]
+            only["snippet"] = str(only.get("snippet") or "")[:48]
+            only["tags"] = list(only.get("tags") or [])[:3]
+            if _serialized_stdout_bytes(payload) <= max_bytes:
+                payload["truncated"] = True
+                break
         hits.pop()
-        payload["matches"] = hits
         payload["hit_count"] = len(hits)
         payload["truncated"] = True
     return payload
@@ -183,7 +250,8 @@ def run_design_vault_rag(
         jev_fn=jev_fn,
     )
     card_index = _index_vault_cards(resolved_vault, norm_plat)
-    enriched_hits = [_enrich_hit(h, card_index, dim_prefixes) for h in rag_res.get("hits", [])]
+    doc_meta_by_id = {d.doc_id: dict(d.metadata) for d in docs}
+    enriched_hits = [_enrich_hit(h, card_index, doc_meta_by_id, dim_prefixes) for h in rag_res.get("hits", [])]
     payload: dict[str, Any] = {
         "schema": "design-vault-rag/v1",
         "ok": True,
@@ -198,7 +266,6 @@ def run_design_vault_rag(
         "total_docs": int(rag_res.get("total_docs", len(docs))),
         "hit_count": len(enriched_hits),
         "hits": enriched_hits,
-        "matches": enriched_hits,
     }
     return _enforce_aci_budget(payload, ACI_MAX_BYTES)
 
